@@ -1,0 +1,35 @@
+{
+  "project_info": {
+    "project_number": "488178315380",
+    "project_id": "english-circle-aistudio",
+    "storage_bucket": "english-circle-aistudio.appspot.com",
+    "firebase_url": "https://english-circle-aistudio.firebaseio.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:488178315380:android:6e40994fa10b910e5c6def",
+        "android_client_info": {
+          "package_name": "com.aistudio.englishcircle.fjkqwl"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "488178315380-6e40994fa10b910e5c6def.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDummyKeyForGoogleServicesInitialization_abc123"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

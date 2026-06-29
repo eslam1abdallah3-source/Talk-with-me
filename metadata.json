@@ -1,0 +1,6 @@
+{
+  "name": "English Circle",
+  "description": "Help people practice English by talking with real people from around the world via matching, text chat, and voice/video calls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
