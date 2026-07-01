@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
-import { WebRtcService } from "./webrtcService";
-import { getUserProfile } from "./databaseService";
-import CallControls from "./CallControls";
+import { WebRtcService } from "../services/webrtcService";
+import { getUserProfile } from "../services/databaseService";
+import CallControls from "../components/CallControls";
 
 /**
  * CallWindow Component
@@ -42,7 +42,7 @@ export default function CallWindow({
       const mins = parseFloat((secs / 60).toFixed(1));
       if (mins >= 0.1) {
         try {
-          const { addPracticeMinutes } = await import("./databaseService");
+          const { addPracticeMinutes } = await import("../services/databaseService");
           await addPracticeMinutes(currentUserId, mins);
         } catch (e) {
           console.error("Failed to automatically log practice minutes:", e);

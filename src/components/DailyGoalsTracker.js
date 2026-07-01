@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { db } from "./firebaseConfig";
+import { db } from "../firebase/firebaseConfig";
 import { doc, onSnapshot } from "firebase/firestore";
-import { addPracticeMinutes, updateDailyGoal } from "./databaseService";
+import { addPracticeMinutes, updateDailyGoal } from "../services/databaseService";
 
 /**
  * DailyGoalsTracker Component

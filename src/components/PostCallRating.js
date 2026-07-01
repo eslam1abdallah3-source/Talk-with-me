@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { getUserProfile, savePostCallRating } from "./databaseService";
+import { getUserProfile, savePostCallRating } from "../services/databaseService";
 
 /**
  * PostCallRating Component

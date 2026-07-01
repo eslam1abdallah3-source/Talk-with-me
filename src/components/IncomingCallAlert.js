@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { getUserProfile } from "./databaseService";
-import { WebRtcService } from "./webrtcService";
+import { getUserProfile } from "../services/databaseService";
+import { WebRtcService } from "../services/webrtcService";
 import { SimpleLevelBadge } from "./LevelProgressCard";
 
 /**

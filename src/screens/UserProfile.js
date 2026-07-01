@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { auth, db } from "./firebaseConfig";
+import { auth, db } from "../firebase/firebaseConfig";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
-import { syncUserBadges } from "./databaseService";
-import BadgesModule from "./BadgesModule";
-import LevelProgressCard from "./LevelProgressCard";
+import { syncUserBadges } from "../services/databaseService";
+import BadgesModule from "../components/BadgesModule";
+import LevelProgressCard from "../components/LevelProgressCard";
 
 /**
  * UserProfile Component
@@ -503,7 +503,7 @@ export default function UserProfile() {
           </select>
         </div>
 
-        <div style={styles.sectionTitle} style={{ ...styles.sectionTitle, marginTop: "28px" }}>
+        <div style={{ ...styles.sectionTitle, marginTop: "28px" }}>
           Conversation Interests
         </div>
         <p style={{ fontSize: "12px", color: "#64748b", margin: "-8px 0 16px 0" }}>

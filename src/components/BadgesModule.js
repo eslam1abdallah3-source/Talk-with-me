@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { BADGE_DEFINITIONS } from "./databaseService";
+import { BADGE_DEFINITIONS } from "../services/databaseService";
 
 /**
  * BadgesModule Component

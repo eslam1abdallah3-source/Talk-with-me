@@ -1241,6 +1241,7 @@ fun CommunityScreen(
             !blockedIds.contains(user.id) && (
                 user.name.contains(searchQuery, ignoreCase = true) ||
                 user.country.contains(searchQuery, ignoreCase = true) ||
+                user.nativeLanguage.contains(searchQuery, ignoreCase = true) ||
                 user.interests.any { it.contains(searchQuery, ignoreCase = true) } ||
                 user.englishLevel.contains(searchQuery, ignoreCase = true)
             )

@@ -98,26 +98,77 @@ class EnglishCircleRepository(private val context: Context) {
     // --- Local Auth / Session State (Fallback when Firebase auth is not active) ---
     private val _localUserFlow = MutableStateFlow<User?>(null)
     val localUserFlow: StateFlow<User?> = _localUserFlow.asStateFlow()
+    private var activeSyncUserId: String? = null
 
     init {
         // Initialize local database with seed data if empty
         scope.launch {
             seedInitialUsersIfNeeded()
-            loadLocalUserSession()
+            observeLocalUserSession()
         }
     }
 
-    private suspend fun loadLocalUserSession() {
-        val me = userDao.getMe().map { it?.toDomain() }.firstOrNull()
-        _localUserFlow.value = me
-        if (me != null) {
-            startUsersRealtimeSync()
+    private fun observeLocalUserSession() {
+        scope.launch {
+            userDao.getMe().collect { entity ->
+                val me = entity?.toDomain()
+                _localUserFlow.value = me
+                if (me != null) {
+                    startUsersRealtimeSync(me.id)
+                } else {
+                    activeSyncUserId = null
+                    // Stop syncing if no user is logged in
+                    usersListener?.remove()
+                    usersListener = null
+                    
+                    // Auto-restore session from Firestore if Room is empty but Firebase Auth has user
+                    val currentUser = firebaseAuth?.currentUser
+                    if (currentUser != null) {
+                        val uid = currentUser.uid
+                        val email = currentUser.email ?: ""
+                        try {
+                            val doc = firestore?.collection("users")?.document(uid)?.get()?.await()
+                            if (doc != null && doc.exists()) {
+                                val name = doc.getString("name") ?: email.substringBefore("@")
+                                val country = doc.getString("country") ?: "United States"
+                                val nativeLanguage = doc.getString("nativeLanguage") ?: "Spanish"
+                                val englishLevel = doc.getString("englishLevel") ?: "Intermediate"
+                                val interestsStr = doc.getString("interests") ?: "Tech,Music,Travel"
+                                val profilePicture = doc.getString("profilePicture") ?: "avatar_me"
+                                
+                                val restoredMe = UserEntity(
+                                    id = uid,
+                                    name = name,
+                                    country = country,
+                                    nativeLanguage = nativeLanguage,
+                                    englishLevel = englishLevel,
+                                    interests = interestsStr,
+                                    profilePicture = profilePicture,
+                                    isOnline = true,
+                                    isMe = true
+                                )
+                                userDao.insertUser(restoredMe)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("Repository", "Failed to auto-restore session from Firestore: ${e.message}")
+                        }
+                    }
+                }
+            }
         }
     }
 
-    fun startUsersRealtimeSync() {
+    fun startUsersRealtimeSync(meId: String? = null) {
         val fstore = firestore ?: return
+        val currentMeId = meId ?: _localUserFlow.value?.id ?: firebaseAuth?.currentUser?.uid ?: ""
+        if (currentMeId.isEmpty()) return
+        
+        if (activeSyncUserId == currentMeId && usersListener != null) {
+            return
+        }
+        
         usersListener?.remove()
+        activeSyncUserId = currentMeId
         
         usersListener = fstore.collection("users")
             .addSnapshotListener { snapshot, error ->
@@ -127,10 +178,9 @@ class EnglishCircleRepository(private val context: Context) {
                 }
                 if (snapshot != null) {
                     scope.launch {
-                        val currentMeId = _localUserFlow.value?.id ?: ""
                         val usersList = snapshot.documents.mapNotNull { doc ->
                             val id = doc.id
-                            if (id == currentMeId) return@mapNotNull null
+                            if (id.isEmpty() || id == currentMeId) return@mapNotNull null
                             
                             val name = doc.getString("name") ?: return@mapNotNull null
                             val country = doc.getString("country") ?: "United States"
@@ -152,6 +202,7 @@ class EnglishCircleRepository(private val context: Context) {
                                 isMe = false
                             )
                         }
+                        userDao.deleteAllOtherUsers()
                         if (usersList.isNotEmpty()) {
                             userDao.insertUsers(usersList)
                         }
@@ -169,8 +220,7 @@ class EnglishCircleRepository(private val context: Context) {
         
         val chatId = if (myId < otherUserId) "${myId}_${otherUserId}" else "${otherUserId}_${myId}"
         
-        activeChatListener = fstore.collection("chats")
-            .whereEqualTo("chatId", chatId)
+        activeChatListener = fstore.collection("chats").document(chatId).collection("messages")
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.e("Repository", "Firestore chats sync failed: ${error.message}")
@@ -179,7 +229,7 @@ class EnglishCircleRepository(private val context: Context) {
                 if (snapshot != null) {
                     scope.launch {
                         val messagesList = snapshot.documents.mapNotNull { doc ->
-                            val id = doc.getString("id") ?: return@mapNotNull null
+                            val id = doc.getString("id") ?: doc.id
                             val senderId = doc.getString("senderId") ?: return@mapNotNull null
                             val receiverId = doc.getString("receiverId") ?: return@mapNotNull null
                             val text = doc.getString("text") ?: return@mapNotNull null
@@ -209,88 +259,11 @@ class EnglishCircleRepository(private val context: Context) {
 
     // --- Seed Data Creation ---
     private suspend fun seedInitialUsersIfNeeded() {
-        // Check if we already have seed users
-        val currentUsers = userDao.getAllOtherUsers().first()
-        if (currentUsers.isEmpty()) {
-            val seedList = listOf(
-                UserEntity(
-                    id = "sofia_123",
-                    name = "Sofia Silva",
-                    country = "Brazil",
-                    nativeLanguage = "Portuguese",
-                    englishLevel = "Intermediate",
-                    interests = "Music,Travel,Dancing,Cooking",
-                    profilePicture = "avatar_sofia",
-                    isOnline = true,
-                    isMe = false
-                ),
-                UserEntity(
-                    id = "kenji_456",
-                    name = "Kenji Tanaka",
-                    country = "Japan",
-                    nativeLanguage = "Japanese",
-                    englishLevel = "Beginner",
-                    interests = "Tech,Gaming,Anime,Movies",
-                    profilePicture = "avatar_kenji",
-                    isOnline = false,
-                    isMe = false
-                ),
-                UserEntity(
-                    id = "chloe_789",
-                    name = "Chloe Dubois",
-                    country = "France",
-                    nativeLanguage = "French",
-                    englishLevel = "Advanced",
-                    interests = "Literature,Art,Cinema,History",
-                    profilePicture = "avatar_chloe",
-                    isOnline = true,
-                    isMe = false
-                ),
-                UserEntity(
-                    id = "ahmed_101",
-                    name = "Ahmed Mansour",
-                    country = "Egypt",
-                    nativeLanguage = "Arabic",
-                    englishLevel = "Intermediate",
-                    interests = "Football,Cooking,History,Tech",
-                    profilePicture = "avatar_ahmed",
-                    isOnline = true,
-                    isMe = false
-                ),
-                UserEntity(
-                    id = "elena_202",
-                    name = "Elena Petrova",
-                    country = "Russia",
-                    nativeLanguage = "Russian",
-                    englishLevel = "Advanced",
-                    interests = "Chess,Coding,Hiking,Books",
-                    profilePicture = "avatar_elena",
-                    isOnline = false,
-                    isMe = false
-                ),
-                UserEntity(
-                    id = "hans_303",
-                    name = "Hans Müller",
-                    country = "Germany",
-                    nativeLanguage = "German",
-                    englishLevel = "Intermediate",
-                    interests = "Engineering,Cars,Hiking,Beer",
-                    profilePicture = "avatar_hans",
-                    isOnline = true,
-                    isMe = false
-                )
-            )
-            userDao.insertUsers(seedList)
-
-            // Seed some default system / chat message history
-            val initialMessage = MessageEntity(
-                id = UUID.randomUUID().toString(),
-                senderId = "sofia_123",
-                receiverId = "me", // Placeholder for my ID
-                text = "Hey there! I would love to practice English with you. Let's talk about our travel goals!",
-                timestamp = System.currentTimeMillis() - 3600000
-            )
-            messageDao.insertMessage(initialMessage)
+        // Active legacy mock-cleaning routine
+        userDao.deleteAllOtherUsers()
+        val seedUserIds = listOf("sofia_123", "kenji_456", "chloe_789", "ahmed_101", "elena_202", "hans_303")
+        for (id in seedUserIds) {
+            messageDao.deleteMessagesWithUser(id)
         }
     }
 
@@ -305,19 +278,24 @@ class EnglishCircleRepository(private val context: Context) {
         
         if (firebaseAuth != null) {
             try {
+                Log.i("Repository", "Starting Firebase Auth createUserWithEmailAndPassword for: $email")
                 val authResult = firebaseAuth!!.createUserWithEmailAndPassword(email, password).await()
                 uid = authResult.user?.uid ?: uid
                 signUpSuccess = true
+                Log.i("Repository", "1. Firebase Auth createUserWithEmailAndPassword succeeded. UID: $uid")
             } catch (e: Exception) {
                 Log.w("Repository", "Firebase auth createUser failed, trying signIn: ${e.message}")
                 try {
                     val authResult = firebaseAuth!!.signInWithEmailAndPassword(email, password).await()
                     uid = authResult.user?.uid ?: uid
                     signUpSuccess = true
+                    Log.i("Repository", "1. Firebase Auth signInFallback succeeded. UID: $uid")
                 } catch (e2: Exception) {
                     Log.e("Repository", "Firebase auth fallback signIn failed: ${e2.message}")
                 }
             }
+        } else {
+            Log.w("Repository", "1. Firebase Auth is inactive. Using random local UUID: $uid")
         }
 
         val me = User(
@@ -338,8 +316,12 @@ class EnglishCircleRepository(private val context: Context) {
 
         // Sync profile to Firestore
         if (firestore != null) {
+            val path = "users/$uid"
+            Log.i("Repository", "2. Initiating saveUserProfile equivalent in Firestore.")
+            Log.i("Repository", "5. Firestore target path: $path")
             try {
                 val userMap = hashMapOf(
+                    "uid" to uid,
                     "name" to me.name,
                     "email" to email,
                     "country" to me.country,
@@ -347,14 +329,29 @@ class EnglishCircleRepository(private val context: Context) {
                     "englishLevel" to me.englishLevel,
                     "interests" to me.interests.joinToString(","),
                     "profilePicture" to me.profilePicture,
+                    "photoURL" to me.profilePicture,
                     "isOnline" to true,
+                    "createdAt" to System.currentTimeMillis(),
+                    "lastSeen" to System.currentTimeMillis(),
                     "lastActive" to System.currentTimeMillis()
                 )
+                Log.i("Repository", "Attempting set() on document path: $path")
                 firestore!!.collection("users").document(uid).set(userMap).await()
-                startUsersRealtimeSync()
+                Log.i("Repository", "3. Firestore set() succeeded!")
+                startUsersRealtimeSync(uid)
             } catch (e: Exception) {
-                Log.e("Repository", "Firebase Firestore profile sync failed: ${e.message}")
+                Log.e("Repository", "3. Firestore set() FAILED!")
+                Log.e("Repository", "4. Full Firestore Exception:", e)
+                
+                val errorMsg = e.message ?: ""
+                if (errorMsg.contains("PERMISSION_DENIED", ignoreCase = true) || errorMsg.contains("permission", ignoreCase = true)) {
+                    Log.e("Repository", "6. Security Rule Verification: Firestore Security Rules are REJECTING this write operation.")
+                } else {
+                    Log.e("Repository", "6. Security Rule Verification: Writing failed due to non-rule causes (check connectivity or configuration).")
+                }
             }
+        } else {
+            Log.w("Repository", "Firestore is inactive. Skipping cloud profile sync.")
         }
         return true
     }
@@ -500,12 +497,12 @@ class EnglishCircleRepository(private val context: Context) {
         
         if (firestore != null) {
             try {
+                // Read users directly from Firestore without filtering by isOnline
                 val snapshot = firestore!!.collection("users")
-                    .whereEqualTo("isOnline", true)
                     .get().await()
                 
                 val meId = _localUserFlow.value?.id ?: ""
-                val onlineUsers = snapshot.documents.mapNotNull { doc ->
+                val registeredUsers = snapshot.documents.mapNotNull { doc ->
                     val id = doc.id
                     if (id == meId) return@mapNotNull null
                     
@@ -530,21 +527,11 @@ class EnglishCircleRepository(private val context: Context) {
                     )
                 }
                 
-                if (onlineUsers.isNotEmpty()) {
-                    val matched = onlineUsers.map { user ->
-                        var score = 0
-                        if (user.englishLevel.equals(level, ignoreCase = true)) {
-                            score += 3
-                        }
-                        val commonInterests = user.interests.intersect(interests.toSet())
-                        score += commonInterests.size * 2
-                        user to score
-                    }.sortedByDescending { it.second }.map { it.first }.firstOrNull()
-                    
-                    if (matched != null) {
-                        userDao.insertUser(matched.toEntity())
-                        return matched
-                    }
+                if (registeredUsers.isNotEmpty()) {
+                    // Display the first other registered user immediately without filtering by level, interests, or online status
+                    val matched = registeredUsers.first()
+                    userDao.insertUser(matched.toEntity())
+                    return matched
                 }
             } catch (e: Exception) {
                 Log.e("Repository", "Firestore matchmaking failed: ${e.message}")
@@ -555,23 +542,9 @@ class EnglishCircleRepository(private val context: Context) {
         val others = getOtherUsersFlow().first()
         if (others.isEmpty()) return null
 
-        val matched = others.map { user ->
-            var score = 0
-            if (user.englishLevel.equals(level, ignoreCase = true)) {
-                score += 3
-            }
-            val commonInterests = user.interests.intersect(interests.toSet())
-            score += commonInterests.size * 2
-            if (user.isOnline) {
-                score += 5
-            }
-            user to score
-        }.sortedByDescending { it.second }.map { it.first }.firstOrNull()
-
-        matched?.let {
-            userDao.updateOnlineStatus(it.id, true)
-        }
-
+        // Return the first other registered user immediately
+        val matched = others.first()
+        userDao.insertUser(matched.toEntity())
         return matched
     }
 
@@ -672,53 +645,11 @@ class EnglishCircleRepository(private val context: Context) {
                     "text" to message.text,
                     "timestamp" to message.timestamp
                 )
-                firestore!!.collection("chats").document(message.id).set(firestoreMsg).await()
+                firestore!!.collection("chats").document(chatId).collection("messages").document(message.id).set(firestoreMsg).await()
             }
         } catch (e: Exception) {
             Log.e("Repository", "Firebase message send failed: ${e.message}")
         }
 
-        val isMockUser = receiverId.startsWith("sofia") || receiverId.startsWith("kenji") || 
-                         receiverId.startsWith("chloe") || receiverId.startsWith("ahmed") ||
-                         receiverId.startsWith("elena") || receiverId.startsWith("hans")
-        if (isMockUser) {
-            triggerSimulatedReply(receiverId, text)
-        }
-    }
-
-    private fun triggerSimulatedReply(partnerId: String, lastUserMessage: String) {
-        scope.launch {
-            delay(2000)
-            val partner = userDao.getUserById(partnerId)?.toDomain() ?: return@launch
-            val replyText = when {
-                lastUserMessage.contains("hello", ignoreCase = true) || lastUserMessage.contains("hi", ignoreCase = true) -> {
-                    "Hello! It's so great to meet you. I'm ${partner.name} from ${partner.country}. How are you practicing your English today?"
-                }
-                lastUserMessage.contains("level", ignoreCase = true) || lastUserMessage.contains("english", ignoreCase = true) -> {
-                    "My English level is ${partner.englishLevel}. I practice by reading and listening to podcasts. What about you? How do you practice?"
-                }
-                lastUserMessage.contains("interest", ignoreCase = true) || lastUserMessage.contains("like", ignoreCase = true) || lastUserMessage.contains("hobby", ignoreCase = true) -> {
-                    "That's so interesting! I really love ${partner.interests.take(2).joinToString(" and ")}. Do you have similar hobbies?"
-                }
-                lastUserMessage.contains("call", ignoreCase = true) || lastUserMessage.contains("voice", ignoreCase = true) || lastUserMessage.contains("video", ignoreCase = true) -> {
-                    "I would love to practice speaking! Click the Call button in the top right to start our voice or video session now! Let's do it."
-                }
-                lastUserMessage.contains("where", ignoreCase = true) || lastUserMessage.contains("country", ignoreCase = true) -> {
-                    "I live in ${partner.country}! It's a beautiful place. Where are you located, and what's it like there?"
-                }
-                else -> {
-                    "That's wonderful! Tell me more about that. Since we are here to practice English, what is your main goal in learning the language?"
-                }
-            }
-
-            val replyMessage = Message(
-                id = UUID.randomUUID().toString(),
-                senderId = partnerId,
-                receiverId = _localUserFlow.value?.id ?: "me",
-                text = replyText,
-                timestamp = System.currentTimeMillis()
-            )
-            messageDao.insertMessage(replyMessage.toEntity())
-        }
     }
 }

@@ -1,4 +1,4 @@
-import { db } from "./firebaseConfig";
+import { db } from "../firebase/firebaseConfig";
 import {
   doc,
   getDoc,
@@ -21,18 +21,136 @@ import {
  * @param {Object} profileData - The profile fields to save.
  */
 export const saveUserProfile = async (uid, profileData) => {
+  console.log("=== FIRESTORE REGISTRATION DIAGNOSTIC ===");
+  console.log("1. Authenticated user's UID:", uid);
+  console.log("2. saveUserProfile() is called with profileData:", profileData);
+  const path = `users/${uid}`;
+  console.log("5. Firestore path being written:", path);
   try {
     const docRef = doc(db, "users", uid);
+    const docSnap = await getDoc(docRef);
+    const existingData = docSnap.exists() ? docSnap.data() : {};
+
     const data = {
+      uid: uid,
+      name: profileData.name || existingData.name || "English Circle Peer",
+      email: profileData.email || existingData.email || "",
+      photoURL: profileData.photoURL || existingData.photoURL || "",
+      createdAt: existingData.createdAt || Date.now(),
+      isOnline: profileData.isOnline !== undefined ? profileData.isOnline : (existingData.isOnline !== undefined ? existingData.isOnline : true),
+      lastSeen: Date.now(),
+      lastActive: Date.now(), // backwards compatibility
       ...profileData,
       updatedAt: serverTimestamp()
     };
+
+    // Guarantee fields are present
+    data.uid = uid;
+    if (!data.createdAt) {
+      data.createdAt = Date.now();
+    }
+
+    console.log("Attempting Firestore setDoc()...");
     await setDoc(docRef, data, { merge: true });
+    console.log("3. Firestore setDoc() succeeded!");
+    console.log("=== END FIRESTORE REGISTRATION DIAGNOSTIC ===");
     return true;
   } catch (error) {
-    console.error("Error saving user profile:", error);
+    console.error("3. Firestore setDoc() FAILED!");
+    console.error("4. Full Firestore Exception:", error);
+    
+    // Check if security rules are blocking the write
+    const errorStr = (error.message || "").toLowerCase() + " " + (error.code || "").toLowerCase();
+    if (errorStr.includes("permission-denied") || errorStr.includes("permission denied") || errorStr.includes("unauthorized") || errorStr.includes("rule")) {
+      console.error("6. Security Rule Verification: Firestore Security Rules are REJECTING this write operation.");
+    } else {
+      console.error("6. Security Rule Verification: Firestore rules might not be the direct cause. Check connection, api key, or schema restrictions. Error code:", error.code);
+    }
+    console.error("=== END FIRESTORE REGISTRATION DIAGNOSTIC ===");
     throw error;
   }
+};
+
+/**
+ * Synchronize user profile on login/session start.
+ * If the user's document in "users" does not exist, it creates it automatically.
+ * If it does exist, it ensures isOnline is true and updates lastSeen.
+ * @param {import("firebase/auth").User} user - Firebase Auth user object.
+ */
+export const syncUserProfileOnLogin = async (user) => {
+  if (!user) return;
+  try {
+    const docRef = doc(db, "users", user.uid);
+    const docSnap = await getDoc(docRef);
+    if (!docSnap.exists()) {
+      console.log("Profile not found. Automatically creating document in 'users' collection.");
+      await saveUserProfile(user.uid, {
+        name: user.displayName || user.email?.split("@")[0] || "English Circle Peer",
+        email: user.email || "",
+        photoURL: user.photoURL || "",
+        createdAt: Date.now(),
+        isOnline: true,
+        lastSeen: Date.now(),
+        englishLevel: "Intermediate",
+        country: "United States",
+        nativeLanguage: "Spanish",
+        interests: ["Music", "Travel", "Tech"]
+      });
+    } else {
+      console.log("Profile found. Updating isOnline to true and lastSeen.");
+      await updateDoc(docRef, {
+        isOnline: true,
+        lastSeen: Date.now(),
+        lastActive: Date.now()
+      });
+    }
+  } catch (error) {
+    console.error("Error syncing user profile on login:", error);
+  }
+};
+
+/**
+ * Set a user offline when they log out or leave.
+ * @param {string} uid - User ID
+ */
+export const setUserOffline = async (uid) => {
+  if (!uid) return;
+  try {
+    const docRef = doc(db, "users", uid);
+    await updateDoc(docRef, {
+      isOnline: false,
+      lastSeen: Date.now(),
+      lastActive: Date.now()
+    });
+    console.log(`User ${uid} successfully marked offline in Firestore.`);
+  } catch (error) {
+    console.error("Error setting user offline:", error);
+  }
+};
+
+/**
+ * Subscribe to all users in real-time, excluding the current user.
+ * @param {string} currentUserId - The authenticated user's ID to exclude.
+ * @param {Function} callback - Triggers when the users collection changes.
+ * @returns {import("firebase/firestore").Unsubscribe} Unsubscribe function.
+ */
+export const subscribeToAllUsers = (currentUserId, callback) => {
+  const q = collection(db, "users");
+  return onSnapshot(q, (snapshot) => {
+    const users = [];
+    console.log("Realtime Update - Total users in collection:", snapshot.size);
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      // Exclude the current logged-in user
+      if (doc.id !== currentUserId) {
+        users.push({ id: doc.id, ...data });
+      }
+    });
+    console.log("Filtered users to display (excluding current):", users.length);
+    callback(users);
+  }, (error) => {
+    console.error("Error in subscribeToAllUsers snapshot listener:", error);
+  });
 };
 
 /**
@@ -80,84 +198,6 @@ export const getOnlineUsers = async (currentUserId) => {
 };
 
 /**
- * Retrieve or create a direct conversation/chat channel ID between two users.
- * Uses a lexicographically sorted combination of user IDs to ensure uniqueness.
- * @param {string} user1Id 
- * @param {string} user2Id 
- * @returns {string} Unique chatId for the two participants.
- */
-export const getOrCreateConversationId = (user1Id, user2Id) => {
-  return user1Id < user2Id ? `${user1Id}_${user2Id}` : `${user2Id}_${user1Id}`;
-};
-
-/**
- * Send a chat message to a conversation.
- * @param {string} senderId - ID of the sender.
- * @param {string} receiverId - ID of the receiver.
- * @param {string} text - Message content.
- */
-export const sendChatMessage = async (senderId, receiverId, text) => {
-  try {
-    const chatId = getOrCreateConversationId(senderId, receiverId);
-    
-    // Save message structure
-    const messageData = {
-      chatId,
-      senderId,
-      receiverId,
-      text,
-      timestamp: Date.now(),
-      createdAt: serverTimestamp()
-    };
-
-    // Add to 'chats' collection
-    await addDoc(collection(db, "chats"), messageData);
-
-    // Update the conversation's last message details
-    const convRef = doc(db, "conversations", chatId);
-    await setDoc(convRef, {
-      chatId,
-      participants: [senderId, receiverId],
-      lastMessage: text,
-      lastMessageSenderId: senderId,
-      lastMessageTime: Date.now(),
-      updatedAt: serverTimestamp()
-    }, { merge: true });
-
-    return true;
-  } catch (error) {
-    console.error("Error sending chat message:", error);
-    throw error;
-  }
-};
-
-/**
- * Listen to messages in a conversation in real-time.
- * @param {string} user1Id 
- * @param {string} user2Id 
- * @param {Function} callback - Callback function with messages list.
- * @returns {import("firebase/firestore").Unsubscribe} Unsubscribe function.
- */
-export const subscribeToChatMessages = (user1Id, user2Id, callback) => {
-  const chatId = getOrCreateConversationId(user1Id, user2Id);
-  const q = query(
-    collection(db, "chats"),
-    where("chatId", "==", chatId),
-    orderBy("timestamp", "asc")
-  );
-
-  return onSnapshot(q, (snapshot) => {
-    const messages = [];
-    snapshot.forEach((doc) => {
-      messages.push({ id: doc.id, ...doc.data() });
-    });
-    callback(messages);
-  }, (error) => {
-    console.error("Error in chat messages snapshot listener:", error);
-  });
-};
-
-/**
  * Fetch recent conversations/chats for a specific user.
  * @param {string} userId - Current authenticated user ID.
  * @param {Function} callback - Callback function that receives list of active chats.
@@ -188,63 +228,32 @@ export const subscribeToConversations = (userId, callback) => {
  * @param {Array<string>} interests - The current user's array of interests.
  * @returns {Promise<Object|null>} A matched user profile, or null if no matching user is found.
  */
-export const findMatchingUser = async (currentUserId, englishLevel, interests) => {
-  try {
-    // Query online users
-    const q = query(
-      collection(db, "users"),
-      where("isOnline", "==", true)
-    );
-    const querySnapshot = await getDocs(q);
-    
-    const candidates = [];
-    const cleanUserInterests = (interests || []).map(i => i.trim().toLowerCase());
-
-    querySnapshot.forEach((doc) => {
-      const userData = { id: doc.id, ...doc.data() };
-      
-      // Exclude current user
-      if (userData.id === currentUserId) return;
-      
-      // Match English proficiency level (case-insensitive)
-      const candidateLevel = userData.englishLevel || "";
-      if (candidateLevel.toLowerCase() !== englishLevel.toLowerCase()) return;
-      
-      // Normalize interests (supports both Firestore array list or comma-separated string)
-      let candidateInterests = [];
-      if (Array.isArray(userData.interests)) {
-        candidateInterests = userData.interests;
-      } else if (typeof userData.interests === "string") {
-        candidateInterests = userData.interests ? userData.interests.split(",") : [];
-      }
-      
-      const cleanCandidateInterests = candidateInterests.map(i => i.trim().toLowerCase());
-      
-      // Check if there is at least one shared interest
-      const sharedInterests = cleanUserInterests.filter(interest => 
-        cleanCandidateInterests.includes(interest)
-      );
-      
-      if (sharedInterests.length > 0) {
-        candidates.push({
-          user: userData,
-          score: sharedInterests.length // Higher score means more shared interests
+export const findMatchingUser = (currentUserId, englishLevel, interests) => {
+  console.log("Current authenticated UID:", currentUserId);
+  return new Promise((resolve, reject) => {
+    try {
+      const q = collection(db, "users");
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        console.log("Total documents received:", snapshot.size);
+        const candidates = [];
+        snapshot.forEach((doc) => {
+          console.log("Document UID:", doc.id);
+          if (doc.id !== currentUserId) {
+            candidates.push({ id: doc.id, ...doc.data() });
+          }
         });
-      }
-    });
-    
-    if (candidates.length === 0) {
-      return null;
+        unsubscribe();
+        console.log("Returning remaining users immediately to the UI. Count:", candidates.length);
+        resolve(candidates);
+      }, (error) => {
+        console.error("Error in onSnapshot for findMatchingUser:", error);
+        reject(error);
+      });
+    } catch (error) {
+      console.error("Error setting up findMatchingUser snapshot listener:", error);
+      reject(error);
     }
-    
-    // Sort by best score first and return the top match
-    candidates.sort((a, b) => b.score - a.score);
-    return candidates[0].user;
-    
-  } catch (error) {
-    console.error("Error finding matching user in Firestore:", error);
-    throw error;
-  }
+  });
 };
 
 /**
@@ -529,6 +538,3 @@ export const syncUserBadges = async (userId) => {
     return [];
   }
 };
-
-
-

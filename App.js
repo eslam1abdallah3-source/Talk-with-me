@@ -8,7 +8,7 @@ import {
   useNavigate,
   useLocation
 } from "react-router-dom";
-import { auth, db } from "./firebaseConfig";
+import { auth, db } from "./src/firebase/firebaseConfig";
 import { onAuthStateChanged } from "firebase/auth";
 import { 
   signInWithEmail, 
@@ -16,18 +16,18 @@ import {
   signInWithGoogle, 
   logoutUser,
   initAuthPersistence 
-} from "./authService";
-import { saveUserProfile, subscribeToConversations } from "./databaseService";
-import UserProfile from "./UserProfile";
-import ChatWindow from "./ChatWindow";
-import MatchingView from "./MatchingView";
-import HistoryView from "./HistoryView";
-import CallWindow from "./CallWindow";
-import SidebarTips from "./SidebarTips";
-import IncomingCallAlert from "./IncomingCallAlert";
-import PostCallRating from "./PostCallRating";
-import DailyGoalsTracker from "./DailyGoalsTracker";
-import DailyVocabularyQuiz from "./DailyVocabularyQuiz";
+} from "./src/services/authService";
+import { saveUserProfile, subscribeToConversations, syncUserProfileOnLogin, setUserOffline } from "./src/services/databaseService";
+import UserProfile from "./src/screens/UserProfile";
+import ChatWindow from "./src/screens/ChatWindow";
+import MatchingView from "./src/screens/MatchingView";
+import HistoryView from "./src/screens/HistoryView";
+import CallWindow from "./src/screens/CallWindow";
+import SidebarTips from "./src/components/SidebarTips";
+import IncomingCallAlert from "./src/components/IncomingCallAlert";
+import PostCallRating from "./src/components/PostCallRating";
+import DailyGoalsTracker from "./src/components/DailyGoalsTracker";
+import DailyVocabularyQuiz from "./src/components/DailyVocabularyQuiz";
 
 // Initialize local session storage persistence immediately
 initAuthPersistence().catch(console.error);
@@ -59,8 +59,12 @@ function LoginScreen({ onAuthSuccess }) {
           setLoading(false);
           return;
         }
+        console.log("Starting email/password signUpWithEmail flow...");
         const user = await signUpWithEmail(email, password);
+        console.log("signUpWithEmail succeeded. Authenticated UID:", user.uid);
+        
         // Save initial profile setup in Firestore
+        console.log("Initiating profile creation in Firestore...");
         await saveUserProfile(user.uid, {
           name: displayName.trim(),
           email: email.trim(),
@@ -71,11 +75,12 @@ function LoginScreen({ onAuthSuccess }) {
           isOnline: true,
           lastActive: Date.now()
         });
+        console.log("Profile successfully written to Firestore for UID:", user.uid);
       } else {
         await signInWithEmail(email, password);
       }
     } catch (err) {
-      console.error(err);
+      console.error("Authentication / registration flow encountered an error:", err);
       setError(err.message || "Authentication failed. Please verify credentials.");
     } finally {
       setLoading(false);
@@ -348,6 +353,13 @@ function MainLayout({ currentUser, onLogout, activeCallDetails, setActiveCallDet
   };
 
   const handleLogout = async () => {
+    if (currentUser) {
+      try {
+        await setUserOffline(currentUser.uid);
+      } catch (err) {
+        console.error("Failed to mark user offline on logout:", err);
+      }
+    }
     await logoutUser();
     navigate("/");
   };
@@ -553,6 +565,7 @@ function MainLayout({ currentUser, onLogout, activeCallDetails, setActiveCallDet
                     currentUserId={currentUser.uid} 
                     partnerId={selectedChatPartner.id} 
                     onBackClick={() => setSelectedChatPartner(null)}
+                    onStartVoiceCall={handleStartCall}
                   />
                 ) : (
                   <div style={styles.chatLayout}>
@@ -681,7 +694,14 @@ export default function App() {
 
   useEffect(() => {
     // Monitor Auth State
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        try {
+          await syncUserProfileOnLogin(user);
+        } catch (err) {
+          console.error("Failed to sync profile on auth change:", err);
+        }
+      }
       setCurrentUser(user);
       setLoading(false);
     });
@@ -695,7 +715,7 @@ export default function App() {
 
     let activeUnsubscribe;
     const bindListener = async () => {
-      const { WebRtcService } = await import("./webrtcService");
+      const { WebRtcService } = await import("./src/services/webrtcService");
       activeUnsubscribe = WebRtcService.listenForIncomingCalls(currentUser.uid, (incomingCall) => {
         if (incomingCall.type === "added") {
           setIncomingCallNotification(incomingCall);

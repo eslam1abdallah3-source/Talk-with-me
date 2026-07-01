@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { getUserProfile } from "./databaseService";
-import { SimpleLevelBadge } from "./LevelProgressCard";
+import { getUserProfile } from "../services/databaseService";
+import { SimpleLevelBadge } from "../components/LevelProgressCard";
 
 /**
  * HistoryView Component
